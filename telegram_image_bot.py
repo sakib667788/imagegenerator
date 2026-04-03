@@ -17,6 +17,8 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
     InputMediaPhoto,
 )
 from telegram.ext import (
@@ -132,10 +134,34 @@ def build_image_url(prompt: str, settings: dict) -> str:
     )
     return url, seed
 
-def fetch_image_bytes(url: str) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "TelegramBot/1.0"})
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        return resp.read()
+async def fetch_image_bytes(url: str) -> bytes:
+    import asyncio
+    delays = [5, 10, 20, 35, 60]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
+    }
+    for attempt in range(len(delays)):
+        try:
+            loop = asyncio.get_event_loop()
+            def _fetch():
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=90) as resp:
+                    return resp.read()
+            data = await loop.run_in_executor(None, _fetch)
+            return data
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < len(delays) - 1:
+                wait = delays[attempt]
+                logger.warning(f"Rate limited (429), waiting {wait}s... (attempt {attempt+1}/{len(delays)})")
+                await asyncio.sleep(wait)
+                continue
+            raise
+        except Exception:
+            if attempt < len(delays) - 1:
+                await asyncio.sleep(delays[attempt])
+                continue
+            raise
 
 def settings_text(settings: dict) -> str:
     ratio_key  = settings.get("ratio", "square")
@@ -151,6 +177,26 @@ def settings_text(settings: dict) -> str:
         f"📐 Ratio: `{ratio_label}`\n"
         f"✨ Enhance: {enhance}\n"
         f"🌱 Seed: `{seed}`"
+    )
+
+
+# ─────────────────────────────────────────────
+#  PERSISTENT BOTTOM KEYBOARD
+# ─────────────────────────────────────────────
+
+def persistent_keyboard():
+    """Always-visible bottom keyboard buttons (like SMSly style)"""
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("🎨 Generate"),   KeyboardButton("🎲 Random")],
+            [KeyboardButton("📦 Batch"),      KeyboardButton("🔁 Regenerate")],
+            [KeyboardButton("⚙️ Settings"),   KeyboardButton("🎭 Styles")],
+            [KeyboardButton("🤖 Models"),     KeyboardButton("📐 Ratio")],
+            [KeyboardButton("📜 History"),    KeyboardButton("💡 Ideas")],
+            [KeyboardButton("❓ Help")],
+        ],
+        resize_keyboard=True,
+        persistent=True,
     )
 
 # ─────────────────────────────────────────────
@@ -280,6 +326,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👇 *Choose an option below to get started:*"
     )
     await update.message.reply_text(
+        "👇 *Quick buttons activated!*",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=persistent_keyboard(),
+    )
+    await update.message.reply_text(
         welcome,
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=main_menu_keyboard(),
@@ -391,7 +442,7 @@ async def _do_generate(update: Update, context: ContextTypes.DEFAULT_TYPE, promp
         (f"🖼️ *Generating variant #{batch_index}...*" if batch_index else "⏳ *Generating your image...*")
     )
     status_msg = await msg.reply_text(
-        status_text + "\n\n`Please wait...`",
+        status_text + "\n\n`⏳ Please wait... (30-60 seconds)`",
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -399,7 +450,7 @@ async def _do_generate(update: Update, context: ContextTypes.DEFAULT_TYPE, promp
 
     try:
         url, seed = build_image_url(prompt, settings)
-        image_bytes = fetch_image_bytes(url)
+        image_bytes = await fetch_image_bytes(url)
         bio = io.BytesIO(image_bytes)
         bio.name = "image.jpg"
 
@@ -434,13 +485,31 @@ async def _do_generate(update: Update, context: ContextTypes.DEFAULT_TYPE, promp
         context.user_data["last_prompt"] = prompt
         context.user_data["last_seed"] = seed
 
+    except urllib.error.HTTPError as e:
+        logger.error(f"HTTP Error: {e.code}")
+        if e.code == 429:
+            msg_text = (
+                "⏳ *Server is busy right now!*\n\n"
+                "Pollinations.ai is getting too many requests.\n"
+                "Please wait *30 seconds* and try again."
+            )
+        else:
+            msg_text = f"❌ *Generation failed!*\n\n`HTTP {e.code}`\n\nPlease try again."
+        await status_msg.edit_text(
+            msg_text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔁 Retry", callback_data="regen_last"),
+                InlineKeyboardButton("🏠 Menu",  callback_data="menu_main"),
+            ]]),
+        )
     except Exception as e:
         logger.error(f"Generation error: {e}")
         await status_msg.edit_text(
             f"❌ *Generation failed!*\n\n`{str(e)[:100]}`\n\nPlease try again.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔁 Retry", callback_data="gen_start"),
+                InlineKeyboardButton("🔁 Retry", callback_data="regen_last"),
                 InlineKeyboardButton("🏠 Menu",  callback_data="menu_main"),
             ]]),
         )
@@ -788,6 +857,117 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     awaiting = context.user_data.get("awaiting")
     text     = update.message.text.strip()
 
+    # ── Handle persistent bottom keyboard buttons ──
+    button_actions = {
+        "🎨 Generate":   "prompt",
+        "🎲 Random":     "random",
+        "📦 Batch":      "batch",
+        "🔁 Regenerate": "regen",
+        "⚙️ Settings":   "settings",
+        "🎭 Styles":     "styles",
+        "🤖 Models":     "models",
+        "📐 Ratio":      "ratio",
+        "📜 History":    "history",
+        "💡 Ideas":      "ideas",
+        "❓ Help":       "help",
+    }
+
+    if text in button_actions:
+        action = button_actions[text]
+
+        if action == "prompt":
+            context.user_data["awaiting"] = "prompt"
+            await update.message.reply_text(
+                "✏️ *Send your image prompt:*\n\n💡 _Be descriptive for best results!_",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        elif action == "random":
+            await cmd_random(update, context)
+        elif action == "batch":
+            last = context.user_data.get("last_prompt", "a beautiful artwork")
+            context.user_data["batch_prompt"] = last
+            await update.message.reply_text(
+                f"📦 *Batch Generate*\n\nUsing: `{last}`\n\nSelect count:",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("2️⃣ 2 Images", callback_data="batch_run_2"),
+                        InlineKeyboardButton("4️⃣ 4 Images", callback_data="batch_run_4"),
+                    ],
+                    [InlineKeyboardButton("6️⃣ 6 Images", callback_data="batch_run_6")],
+                    [InlineKeyboardButton("❌ Cancel",     callback_data="menu_main")],
+                ]),
+            )
+        elif action == "regen":
+            last = context.user_data.get("last_prompt")
+            if last:
+                await _do_generate(update, context, last)
+            else:
+                await update.message.reply_text("⚠️ No previous generation found! Generate something first.")
+        elif action == "settings":
+            settings = get_user_settings(context)
+            await update.message.reply_text(
+                settings_text(settings),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=settings_keyboard(settings),
+            )
+        elif action == "styles":
+            settings = get_user_settings(context)
+            await update.message.reply_text(
+                "🎨 *Select Art Style:*",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=styles_keyboard(settings.get("style")),
+            )
+        elif action == "models":
+            settings = get_user_settings(context)
+            await update.message.reply_text(
+                "🤖 *Select AI Model:*",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=models_keyboard(settings.get("model", "flux")),
+            )
+        elif action == "ratio":
+            settings = get_user_settings(context)
+            await update.message.reply_text(
+                "📐 *Select Aspect Ratio:*",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=ratio_keyboard(settings.get("ratio", "square")),
+            )
+        elif action == "history":
+            history = get_history(context)
+            if not history:
+                await update.message.reply_text(
+                    "📭 *No history yet!* Generate some images first.",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            else:
+                await update.message.reply_text(
+                    f"📜 *History* ({len(history)} items):",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=history_keyboard(history),
+                )
+        elif action == "ideas":
+            ideas = [
+                "A majestic dragon soaring over mountains at golden hour",
+                "Underwater city with bioluminescent creatures",
+                "A lone astronaut standing on an alien planet",
+                "Enchanted forest with glowing mushrooms and fairies",
+                "Steampunk marketplace in a floating city",
+                "Cyberpunk street market at night with neon signs",
+                "A cozy magical library with floating books",
+                "Futuristic samurai in a neon-lit dojo",
+            ]
+            await update.message.reply_text(
+                "💡 *Prompt Ideas — tap to copy:*\n\n" + "\n".join(f"• `{p}`" for p in ideas),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🎲 Use Random Idea", callback_data="gen_random")
+                ]]),
+            )
+        elif action == "help":
+            await cmd_help(update, context)
+        return
+
+    # ── Handle awaiting inputs ──
     if awaiting == "prompt":
         context.user_data["awaiting"] = None
         await _do_generate(update, context, text)

@@ -196,7 +196,6 @@ def persistent_keyboard():
             [KeyboardButton("❓ Help")],
         ],
         resize_keyboard=True,
-        persistent=True,
     )
 
 # ─────────────────────────────────────────────
@@ -325,13 +324,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Custom seeds for reproducibility\n\n"
         "👇 *Choose an option below to get started:*"
     )
-    # প্রথমে bottom keyboard activate করো
     await update.message.reply_text(
-        "✅ *Quick buttons activated!* নিচের বাটন দিয়ে যেকোনো সময় কাজ করতে পারবেন।",
+        "👇 *Quick buttons activated!*",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=persistent_keyboard(),
     )
-    # তারপর welcome + inline menu পাঠাও
     await update.message.reply_text(
         welcome,
         parse_mode=ParseMode.MARKDOWN,
@@ -357,11 +354,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`Futuristic city with flying cars`\n"
         "`Portrait of a samurai warrior`"
     )
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]])
-    if update.message:
-        await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
-    elif update.callback_query:
-        await update.callback_query.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+    await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN,
+                                    reply_markup=InlineKeyboardMarkup([[
+                                        InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")
+                                    ]]))
 
 async def cmd_generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args:
@@ -388,12 +384,6 @@ async def cmd_random(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Futuristic samurai in a neon-lit dojo",
     ]
     prompt = random.choice(prompts)
-    # callback_query থেকে call হলে update.message থাকে না, তাই আলাদা handle করতে হবে
-    if update.callback_query and not update.message:
-        await update.callback_query.message.reply_text(
-            f"🎲 *Random prompt:* `{prompt}`\n\n`⏳ Please wait...`",
-            parse_mode=ParseMode.MARKDOWN,
-        )
     await _do_generate(update, context, prompt, msg_override=f"🎲 *Random prompt:* `{prompt}`")
 
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -442,11 +432,8 @@ async def _do_generate(update: Update, context: ContextTypes.DEFAULT_TYPE, promp
         ASPECT_RATIOS_temp = ASPECT_RATIOS.copy()
         ASPECT_RATIOS_temp[orig_ratio] = (min(w*2, 2048), min(h*2, 2048), label + " HD")
 
-    if update.message:
-        msg = update.message
-    elif update.callback_query:
-        msg = update.callback_query.message
-    else:
+    msg = update.message or (update.callback_query.message if update.callback_query else None)
+    if not msg:
         return
 
     status_text = (

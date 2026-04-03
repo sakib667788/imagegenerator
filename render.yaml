@@ -1,0 +1,7 @@
+services:
+  - type: worker
+    name: telegram-image-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python telegram_image_bot.py
+    plan: free

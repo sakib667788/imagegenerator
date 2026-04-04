@@ -878,10 +878,13 @@ async def remove_background(image_bytes: bytes) -> bytes:
         body = (
             f"--{boundary}\r\n"
             f'Content-Disposition: form-data; name="size"\r\n\r\n'
-            f"auto\r\n"
+            f"4k\r\n"
             f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="image_file"; filename="image.jpg"\r\n'
-            f"Content-Type: image/jpeg\r\n\r\n"
+            f'Content-Disposition: form-data; name="format"\r\n\r\n'
+            f"png\r\n"
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="image_file"; filename="image.png"\r\n'
+            f"Content-Type: image/png\r\n\r\n"
         ).encode() + image_bytes + f"\r\n--{boundary}--\r\n".encode()
 
         req = urllib.request.Request(
@@ -918,10 +921,14 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_chat_action(chat_id=msg.chat_id, action="upload_photo")
 
         # সবচেয়ে বড় photo নাও
-        photo = msg.photo[-1]
-        file = await context.bot.get_file(photo.file_id)
-        
+        # Document হিসেবে পাঠালে original quality থাকে, photo হলে Telegram compress করে
         import io, urllib.request
+        if msg.document and msg.document.mime_type in ("image/jpeg", "image/png", "image/webp"):
+            file = await context.bot.get_file(msg.document.file_id)
+        else:
+            photo = msg.photo[-1]
+            file = await context.bot.get_file(photo.file_id)
+
         file_url = file.file_path
         with urllib.request.urlopen(file_url, timeout=30) as r:
             image_bytes = r.read()
@@ -1144,8 +1151,8 @@ def main():
     # Callback queries
     app.add_handler(CallbackQueryHandler(callback_handler))
 
-    # Photo messages (background remover)
-    app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
+    # Photo messages (background remover) - PHOTO বা Document image দুটোই accept করে
+    app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, photo_handler))
 
     # Text messages
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))

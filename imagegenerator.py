@@ -36,7 +36,7 @@ from telegram.constants import ParseMode, ChatAction
 #  CONFIG
 # ─────────────────────────────────────────────
 BOT_TOKEN   = os.environ.get("BOT_TOKEN", "8638701994:AAF1rFHvzaRX8t6eBMA5TSYZUnZ5gi_pGdk")
-REMOVE_BG_KEY = os.environ.get("REMOVE_BG_KEY", "A9TZxVLdrRkWTbnMprAmmCM9")
+REMOVE_BG_KEY = os.environ.get("REMOVE_BG_KEY", "uwoipxN5PqRhJW6btw33WLfX")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
 PORT        = int(os.environ.get("PORT", 8080))
 

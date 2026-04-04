@@ -36,7 +36,7 @@ from telegram.constants import ParseMode, ChatAction
 #  CONFIG
 # ─────────────────────────────────────────────
 BOT_TOKEN   = os.environ.get("BOT_TOKEN", "8638701994:AAF1rFHvzaRX8t6eBMA5TSYZUnZ5gi_pGdk")
-GEMINI_KEY  = os.environ.get("GEMINI_KEY", "AIzaSyDBeRwDVbQvKY0mI7KeDED4M48JJ2HK4DY")
+REMOVE_BG_KEY = os.environ.get("REMOVE_BG_KEY", "A9TZxVLdrRkWTbnMprAmmCM9")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
 PORT        = int(os.environ.get("PORT", 8080))
 
@@ -55,8 +55,12 @@ WAITING_BATCH_COUNT = 3
 
 # Pollinations models
 MODELS = {
-    "imagen-3":       "🖼️ Imagen 3 (Default)",
-    "imagen-3-fast":  "⚡ Imagen 3 Fast",
+    "gptimage":       "🤖 GPT Image (Best Quality)",
+    "flux":           "⚡ Flux",
+    "flux-realism":   "📸 Flux Realism",
+    "flux-anime":     "🌸 Flux Anime",
+    "flux-3d":        "🎮 Flux 3D",
+    "turbo":          "🚀 Turbo (Fast)",
 }
 
 # Style presets
@@ -87,7 +91,7 @@ ASPECT_RATIOS = {
 
 # Default user settings
 DEFAULT_SETTINGS = {
-    "model":       "imagen-3",
+    "model":       "gptimage",
     "style":       None,
     "ratio":       "square",
     "enhance":     True,
@@ -109,61 +113,58 @@ def get_history(context: ContextTypes.DEFAULT_TYPE) -> list:
         context.user_data["history"] = []
     return context.user_data["history"]
 
-async def generate_image_gemini(prompt: str, settings: dict):
-    """Gemini API দিয়ে image generate করে bytes আর seed return করে"""
-    import asyncio, base64, json as _json
+async def generate_image_pollinations(prompt: str, settings: dict):
+    """Pollinations.ai দিয়ে image generate করে - gptimage model"""
+    import asyncio
 
     style   = settings.get("style")
     seed    = settings.get("seed") or random.randint(1, 999999)
+    model   = settings.get("model", "gptimage")
+    enhance = settings.get("enhance", True)
+
+    ratio_key = settings.get("ratio", "square")
+    width, height, _ = ASPECT_RATIOS.get(ratio_key, (1024, 1024, ""))
 
     full_prompt = prompt
     if style and style in STYLE_PRESETS:
         full_prompt = f"{prompt}, {STYLE_PRESETS[style]}"
 
-    # Gemini imagen-3.0-generate-002 endpoint
+    encoded = urllib.parse.quote(full_prompt)
     url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"imagen-3.0-generate-002:predict?key={GEMINI_KEY}"
+        f"https://image.pollinations.ai/prompt/{encoded}"
+        f"?width={width}&height={height}"
+        f"&model={model}"
+        f"&seed={seed}"
+        f"&enhance={'true' if enhance else 'false'}"
+        f"&nologo=true"
+        f"&nofeed=true"
     )
 
-    ratio_key = settings.get("ratio", "square")
-    ratio_map = {
-        "square":    "1:1",
-        "portrait":  "3:4",
-        "landscape": "4:3",
-        "wide":      "16:9",
-        "tall":      "9:16",
-        "banner":    "4:1",
+    delays = [5, 10, 20, 35, 60]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
     }
-    aspect = ratio_map.get(ratio_key, "1:1")
 
-    payload = _json.dumps({
-        "instances": [{"prompt": full_prompt}],
-        "parameters": {
-            "sampleCount": 1,
-            "aspectRatio": aspect,
-            "safetyFilterLevel": "block_few",
-            "personGeneration": "allow_adult",
-        }
-    }).encode()
-
-    def _call():
-        req = urllib.request.Request(
-            url,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            return resp.read()
-
-    loop = asyncio.get_event_loop()
-    raw  = await loop.run_in_executor(None, _call)
-    data = _json.loads(raw)
-
-    b64 = data["predictions"][0]["bytesBase64Encoded"]
-    image_bytes = base64.b64decode(b64)
-    return image_bytes, seed
+    for attempt in range(len(delays)):
+        try:
+            loop = asyncio.get_event_loop()
+            def _fetch():
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    return resp.read()
+            image_bytes = await loop.run_in_executor(None, _fetch)
+            return image_bytes, seed
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < len(delays) - 1:
+                await asyncio.sleep(delays[attempt])
+                continue
+            raise
+        except Exception:
+            if attempt < len(delays) - 1:
+                await asyncio.sleep(delays[attempt])
+                continue
+            raise
 
 def settings_text(settings: dict) -> str:
     ratio_key  = settings.get("ratio", "square")
@@ -190,12 +191,12 @@ def persistent_keyboard():
     """Always-visible bottom keyboard buttons (like SMSly style)"""
     return ReplyKeyboardMarkup(
         [
-            [KeyboardButton("🎨 Generate"),   KeyboardButton("🎲 Random")],
-            [KeyboardButton("📦 Batch"),      KeyboardButton("🔁 Regenerate")],
-            [KeyboardButton("⚙️ Settings"),   KeyboardButton("🎭 Styles")],
-            [KeyboardButton("🤖 Models"),     KeyboardButton("📐 Ratio")],
-            [KeyboardButton("📜 History"),    KeyboardButton("💡 Ideas")],
-            [KeyboardButton("❓ Help")],
+            [KeyboardButton("🎨 Generate"),        KeyboardButton("🎲 Random")],
+            [KeyboardButton("📦 Batch"),           KeyboardButton("🔁 Regenerate")],
+            [KeyboardButton("✂️ Background Remove"), KeyboardButton("⚙️ Settings")],
+            [KeyboardButton("🎭 Styles"),           KeyboardButton("🤖 Models")],
+            [KeyboardButton("📐 Ratio"),            KeyboardButton("📜 History")],
+            [KeyboardButton("💡 Ideas"),            KeyboardButton("❓ Help")],
         ],
         resize_keyboard=True,
     )
@@ -450,14 +451,14 @@ async def _do_generate(update: Update, context: ContextTypes.DEFAULT_TYPE, promp
     await context.bot.send_chat_action(chat_id=msg.chat_id, action=ChatAction.UPLOAD_PHOTO)
 
     try:
-        image_bytes, seed = await generate_image_gemini(prompt, settings)
+        image_bytes, seed = await generate_image_pollinations(prompt, settings)
         bio = io.BytesIO(image_bytes)
         bio.name = "image.jpg"
 
         caption = (
             f"🎨 *Generated Image*\n\n"
             f"📝 `{prompt[:200]}`\n\n"
-            f"🤖 Model: `Gemini Imagen 3`\n"
+            f"🤖 Model: `{settings.get('model', 'gptimage')}`\n"
             f"🎭 Style: `{settings.get('style') or 'Default'}`\n"
             f"📐 Ratio: `{ASPECT_RATIOS[settings.get('ratio','square')][2]}`\n"
             f"🌱 Seed: `{seed}`"
@@ -838,6 +839,17 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         context.user_data["awaiting"] = "seed"
 
+    elif data == "bg_remove_start":
+        context.user_data["awaiting"] = "bg_photo"
+        await msg.edit_text(
+            "✂️ *Background Remover*\n\n"
+            "📸 একটা photo পাঠান — background remove করে high quality PNG দেব!",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("❌ Cancel", callback_data="menu_main")
+            ]]),
+        )
+
     elif data == "seed_random":
         settings["seed"] = None
         await query.answer("🎲 Seed set to random!")
@@ -851,23 +863,128 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #  TEXT MESSAGE HANDLER (awaiting inputs)
 # ─────────────────────────────────────────────
 
+
+# ─────────────────────────────────────────────
+#  BACKGROUND REMOVER
+# ─────────────────────────────────────────────
+
+async def remove_background(image_bytes: bytes) -> bytes:
+    """remove.bg API দিয়ে background remove করে high quality PNG দেয়"""
+    import asyncio
+    import urllib.request, urllib.parse
+
+    def _call():
+        boundary = "----FormBoundary7MA4YWxkTrZu0gW"
+        body = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="size"\r\n\r\n'
+            f"auto\r\n"
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="image_file"; filename="image.jpg"\r\n'
+            f"Content-Type: image/jpeg\r\n\r\n"
+        ).encode() + image_bytes + f"\r\n--{boundary}--\r\n".encode()
+
+        req = urllib.request.Request(
+            "https://api.remove.bg/v1.0/removebg",
+            data=body,
+            headers={
+                "X-Api-Key": REMOVE_BG_KEY,
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return resp.read()
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _call)
+    return result
+
+
+async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """User যখন photo পাঠায় তখন background remove করে"""
+    if context.user_data.get("awaiting") != "bg_photo":
+        return  # bg remove mode এ না থাকলে ignore
+
+    context.user_data["awaiting"] = None
+
+    msg = update.message
+    status = await msg.reply_text(
+        "✂️ *Background removing...*\n\n`⏳ Please wait...`",
+        parse_mode="Markdown",
+    )
+
+    try:
+        await context.bot.send_chat_action(chat_id=msg.chat_id, action="upload_photo")
+
+        # সবচেয়ে বড় photo নাও
+        photo = msg.photo[-1]
+        file = await context.bot.get_file(photo.file_id)
+        
+        import io, urllib.request
+        file_url = file.file_path
+        with urllib.request.urlopen(file_url, timeout=30) as r:
+            image_bytes = r.read()
+
+        # Background remove
+        result_bytes = await remove_background(image_bytes)
+
+        await status.delete()
+
+        bio = io.BytesIO(result_bytes)
+        bio.name = "removed_bg.png"
+
+        await msg.reply_document(
+            document=bio,
+            filename="removed_bg.png",
+            caption=(
+                "✅ *Background Removed!*\n\n"
+                "📎 High quality PNG file\n"
+                "🔍 Transparent background\n\n"
+                "_Powered by remove.bg_"
+            ),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("✂️ Remove Another", callback_data="bg_remove_start"),
+                InlineKeyboardButton("🏠 Main Menu",      callback_data="menu_main"),
+            ]]),
+        )
+
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode()[:200]
+        logger.error(f"remove.bg error: {e.code} - {err_body}")
+        if e.code == 402:
+            msg_text = "❌ *remove.bg credit শেষ!* API এর free credits শেষ হয়ে গেছে।"
+        elif e.code == 400:
+            msg_text = "❌ *Image টা process করা গেলনা।* অন্য একটা ছবি দিন।"
+        else:
+            msg_text = f"❌ *Error {e.code}* — Please try again."
+        await status.edit_text(msg_text, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"bg remove error: {e}")
+        await status.edit_text(
+            "❌ *Something went wrong!* Please try again.",
+            parse_mode="Markdown",
+        )
+
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     awaiting = context.user_data.get("awaiting")
     text     = update.message.text.strip()
 
     # ── Handle persistent bottom keyboard buttons ──
     button_actions = {
-        "🎨 Generate":   "prompt",
-        "🎲 Random":     "random",
-        "📦 Batch":      "batch",
-        "🔁 Regenerate": "regen",
-        "⚙️ Settings":   "settings",
-        "🎭 Styles":     "styles",
-        "🤖 Models":     "models",
-        "📐 Ratio":      "ratio",
-        "📜 History":    "history",
-        "💡 Ideas":      "ideas",
-        "❓ Help":       "help",
+        "🎨 Generate":           "prompt",
+        "🎲 Random":             "random",
+        "📦 Batch":              "batch",
+        "🔁 Regenerate":         "regen",
+        "✂️ Background Remove":  "bg_remove",
+        "⚙️ Settings":           "settings",
+        "🎭 Styles":             "styles",
+        "🤖 Models":             "models",
+        "📐 Ratio":              "ratio",
+        "📜 History":            "history",
+        "💡 Ideas":              "ideas",
+        "❓ Help":               "help",
     }
 
     if text in button_actions:
@@ -961,6 +1078,17 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardButton("🎲 Use Random Idea", callback_data="gen_random")
                 ]]),
             )
+        elif action == "bg_remove":
+            context.user_data["awaiting"] = "bg_photo"
+            await update.message.reply_text(
+                "✂️ *Background Remover*\n\n"
+                "📸 একটা photo পাঠান — background remove করে high quality PNG দেব!\n\n"
+                "_Best results: Clear subject, good lighting_",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("❌ Cancel", callback_data="menu_main")
+                ]]),
+            )
         elif action == "help":
             await cmd_help(update, context)
         return
@@ -1015,6 +1143,9 @@ def main():
 
     # Callback queries
     app.add_handler(CallbackQueryHandler(callback_handler))
+
+    # Photo messages (background remover)
+    app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
 
     # Text messages
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))

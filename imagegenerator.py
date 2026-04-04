@@ -36,7 +36,8 @@ from telegram.constants import ParseMode, ChatAction
 #  CONFIG
 # ─────────────────────────────────────────────
 BOT_TOKEN   = os.environ.get("BOT_TOKEN", "8638701994:AAF1rFHvzaRX8t6eBMA5TSYZUnZ5gi_pGdk")
-REMOVE_BG_KEY = os.environ.get("REMOVE_BG_KEY", "uwoipxN5PqRhJW6btw33WLfX")
+REMOVE_BG_KEY = os.environ.get("REMOVE_BG_KEY", "A9TZxVLdrRkWTbnMprAmmCM9")
+REPLICATE_KEY = os.environ.get("REPLICATE_KEY", "")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
 PORT        = int(os.environ.get("PORT", 8080))
 
@@ -112,6 +113,66 @@ def get_history(context: ContextTypes.DEFAULT_TYPE) -> list:
     if "history" not in context.user_data:
         context.user_data["history"] = []
     return context.user_data["history"]
+
+async def enhance_image_replicate(image_bytes: bytes) -> bytes:
+    """Replicate real-esrgan দিয়ে image enhance/upscale করে"""
+    import asyncio, base64, json, time
+
+    if not REPLICATE_KEY:
+        return image_bytes  # key না থাকলে original ই দাও
+
+    def _call():
+        b64 = base64.b64encode(image_bytes).decode()
+        data_uri = f"data:image/png;base64,{b64}"
+
+        # Prediction তৈরি করো
+        req = urllib.request.Request(
+            "https://api.replicate.com/v1/models/nightmareai/real-esrgan/predictions",
+            data=json.dumps({
+                "input": {
+                    "image": data_uri,
+                    "scale": 2,
+                    "face_enhance": False,
+                }
+            }).encode(),
+            headers={
+                "Authorization": f"Bearer {REPLICATE_KEY}",
+                "Content-Type": "application/json",
+                "Prefer": "wait=60",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            result = json.loads(resp.read())
+
+        # Polling — output না আসা পর্যন্ত অপেক্ষা করো
+        for _ in range(30):
+            status = result.get("status")
+            if status == "succeeded":
+                output_url = result["output"]
+                with urllib.request.urlopen(output_url, timeout=60) as r:
+                    return r.read()
+            elif status in ("failed", "canceled"):
+                raise Exception(f"Replicate failed: {result.get('error')}")
+            # Poll again
+            poll_url = result.get("urls", {}).get("get") or f"https://api.replicate.com/v1/predictions/{result['id']}"
+            req2 = urllib.request.Request(
+                poll_url,
+                headers={"Authorization": f"Bearer {REPLICATE_KEY}"},
+            )
+            with urllib.request.urlopen(req2, timeout=30) as r:
+                result = json.loads(r.read())
+            time.sleep(3)
+
+        return image_bytes  # timeout হলে original দাও
+
+    loop = asyncio.get_event_loop()
+    try:
+        return await loop.run_in_executor(None, _call)
+    except Exception as e:
+        logger.warning(f"Replicate enhance failed: {e} — original image দেওয়া হচ্ছে")
+        return image_bytes
+
 
 async def generate_image_pollinations(prompt: str, settings: dict):
     """Pollinations.ai দিয়ে image generate করে - gptimage model"""
@@ -452,8 +513,17 @@ async def _do_generate(update: Update, context: ContextTypes.DEFAULT_TYPE, promp
 
     try:
         image_bytes, seed = await generate_image_pollinations(prompt, settings)
+
+        # Replicate দিয়ে enhance করো
+        if REPLICATE_KEY:
+            await status_msg.edit_text(
+                "✨ *Enhancing image quality...*\n\n`⏳ Please wait...`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            image_bytes = await enhance_image_replicate(image_bytes)
+
         bio = io.BytesIO(image_bytes)
-        bio.name = "image.jpg"
+        bio.name = "image.png"
 
         caption = (
             f"🎨 *Generated Image*\n\n"

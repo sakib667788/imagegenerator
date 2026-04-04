@@ -906,12 +906,17 @@ async def remove_background(image_bytes: bytes) -> bytes:
 
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """User যখন photo পাঠায় তখন background remove করে"""
-    if context.user_data.get("awaiting") != "bg_photo":
-        return  # bg remove mode এ না থাকলে ignore
+    msg = update.message
+
+    is_image_doc = bool(
+        msg.document and msg.document.mime_type in ("image/jpeg", "image/png", "image/webp")
+    )
+
+    if context.user_data.get("awaiting") != "bg_photo" and not is_image_doc:
+        return  # bg remove mode এ না থাকলে এবং image document ও না হলে ignore
 
     context.user_data["awaiting"] = None
 
-    msg = update.message
     status = await msg.reply_text(
         "✂️ *Background removing...*\n\n`⏳ Please wait...`",
         parse_mode="Markdown",
@@ -920,14 +925,16 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await context.bot.send_chat_action(chat_id=msg.chat_id, action="upload_photo")
 
-        # সবচেয়ে বড় photo নাও
-        # Document হিসেবে পাঠালে original quality থাকে, photo হলে Telegram compress করে
         import io, urllib.request
-        if msg.document and msg.document.mime_type in ("image/jpeg", "image/png", "image/webp"):
+
+        # Document হিসেবে পাঠালে original quality থাকে, photo হলে Telegram compress করে
+        if is_image_doc:
             file = await context.bot.get_file(msg.document.file_id)
+        elif msg.photo:
+            file = await context.bot.get_file(msg.photo[-1].file_id)
         else:
-            photo = msg.photo[-1]
-            file = await context.bot.get_file(photo.file_id)
+            await status.edit_text("❌ *কোনো ছবি পাওয়া যায়নি।* আবার চেষ্টা করুন।", parse_mode="Markdown")
+            return
 
         file_url = file.file_path
         with urllib.request.urlopen(file_url, timeout=30) as r:

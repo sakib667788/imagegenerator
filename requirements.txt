@@ -1,6 +1,2 @@
-<<<<<<< HEAD
 python-telegram-bot==20.7
 httpx==0.25.2
-=======
-python-telegram-bot==21.5
->>>>>>> bcd734e778226a8de9fa6dd5840d9120a194e4a2
